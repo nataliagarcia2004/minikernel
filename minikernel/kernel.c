@@ -193,7 +193,100 @@ static BCP * planificador(){
 	return lista_listos.primero;
 }
 
+static int cerrar_mutex_descriptor(unsigned int mutexid){
 
+    int posicion_mutex;
+    int nivel_anterior;
+    BCP *p_proc_desbloqueado;
+    BCP *p_proc_creador;
+
+    /* Comprueba que el descriptor este dentro de los posibles del proceso */
+    if(mutexid >= NUM_MUT_PROC){
+        return -1;
+    }
+
+    /* Obtiene la posicion del mutex en la tabla global */
+    posicion_mutex = p_proc_actual->descriptores[mutexid];
+
+    /* Comprueba que el descriptor este realmente abierto */
+    if(posicion_mutex < 0 || posicion_mutex >= NUM_MUT){
+        return -1;
+    }
+
+    /* Comprueba que el mutex siga existiendo */
+    if(tabla_mutex[posicion_mutex].usado != MUTEX_USADO){
+        return -1;
+    }
+
+    /* ZONA CRITICA: se va a modificar el mutex y los descriptores */
+    nivel_anterior = fijar_nivel_int(NIVEL_3);
+
+    /* Si el proceso actual es propietario, libera completamente el mutex */
+    if(tabla_mutex[posicion_mutex].propietario == p_proc_actual){
+
+        /* Si nadie espera, el mutex queda libre */
+        if(tabla_mutex[posicion_mutex].espera_lock.primero == NULL){
+
+            tabla_mutex[posicion_mutex].propietario = NULL;
+            tabla_mutex[posicion_mutex].num_bloqueos = 0;
+        }
+
+        /* Si hay alguien esperando, el mutex pasa al primero */
+        else{
+
+            p_proc_desbloqueado =
+                tabla_mutex[posicion_mutex].espera_lock.primero;
+
+            eliminar_primero(&tabla_mutex[posicion_mutex].espera_lock);
+
+            tabla_mutex[posicion_mutex].propietario = p_proc_desbloqueado;
+            tabla_mutex[posicion_mutex].num_bloqueos = 1;
+
+            p_proc_desbloqueado->estado = LISTO;
+
+            insertar_ultimo(&lista_listos, p_proc_desbloqueado);
+        }
+    }
+
+    /* Cierra el descriptor del proceso */
+    p_proc_actual->descriptores[mutexid] = -1;
+
+    /* Hay una referencia menos al mutex */
+    tabla_mutex[posicion_mutex].num_abiertos--;
+
+    /* Si otros procesos todavia lo tienen abierto, el mutex sigue existiendo */
+    if(tabla_mutex[posicion_mutex].num_abiertos > 0){
+
+        fijar_nivel_int(nivel_anterior);
+        return 0;
+    }
+
+    /* Nadie tiene ya abierto el mutex: se elimina de la tabla global */
+    tabla_mutex[posicion_mutex].usado = MUTEX_NO_USADO;
+    tabla_mutex[posicion_mutex].nombre[0] = '\0';
+    tabla_mutex[posicion_mutex].tipo = NO_RECURSIVO;
+    tabla_mutex[posicion_mutex].num_abiertos = 0;
+    tabla_mutex[posicion_mutex].propietario = NULL;
+    tabla_mutex[posicion_mutex].num_bloqueos = 0;
+    tabla_mutex[posicion_mutex].espera_lock.primero = NULL;
+    tabla_mutex[posicion_mutex].espera_lock.ultimo = NULL;
+
+    /* Si hay un proceso esperando para crear un mutex, se despierta */
+    if(lista_espera_crear_mutex.primero != NULL){
+
+        p_proc_creador = lista_espera_crear_mutex.primero;
+
+        eliminar_primero(&lista_espera_crear_mutex);
+
+        p_proc_creador->estado = LISTO;
+
+        insertar_ultimo(&lista_listos, p_proc_creador);
+    }
+
+    fijar_nivel_int(nivel_anterior);
+
+    return 0;
+}
 
 /*
  *
@@ -204,6 +297,15 @@ static BCP * planificador(){
 static void liberar_proceso(){
 	BCP * p_proc_anterior;
 	int nivel_anterior;
+	int i;
+
+	/* Cierra todos los mutex que el proceso tenga abiertos */
+    for(i=0; i<NUM_MUT_PROC; i++){
+
+        if(p_proc_actual->descriptores[i] != -1){
+            cerrar_mutex_descriptor(i);
+        }
+    }
 
 	liberar_imagen(p_proc_actual->info_mem); /* liberar mapa */
 	nivel_anterior = fijar_nivel_int(NIVEL_3);
@@ -782,121 +884,12 @@ int sis_unlock(){
 int sis_cerrar_mutex(){
 
     unsigned int mutexid;
-    int posicion_mutex;
-    int nivel_anterior;
-    BCP *p_proc_desbloqueado;
-    BCP *p_proc_creador;
 
     /* Lee el descriptor local enviado por el programa de usuario */
     mutexid = (unsigned int) leer_registro(1);
 
-    /* Comprueba que el descriptor este dentro de los posibles del proceso */
-    if(mutexid >= NUM_MUT_PROC){
-        return -1;
-    }
-
-    /* Obtiene la posicion del mutex en la tabla global */
-    posicion_mutex = p_proc_actual->descriptores[mutexid];
-
-    /* Comprueba que el descriptor este realmente abierto */
-    if(posicion_mutex < 0 || posicion_mutex >= NUM_MUT){
-        return -1;
-    }
-
-    /* Comprueba que el mutex siga existiendo */
-    if(tabla_mutex[posicion_mutex].usado != MUTEX_USADO){
-        return -1;
-    }
-
-    /* ZONA CRITICA: se va a modificar el mutex y los descriptores */
-    nivel_anterior = fijar_nivel_int(NIVEL_3);
-
-    /*
-     * Si el proceso actual es propietario,
-     * libera completamente el mutex
-     */
-    if(tabla_mutex[posicion_mutex].propietario == p_proc_actual){
-
-        /* Si nadie espera, el mutex queda libre */
-        if(tabla_mutex[posicion_mutex].espera_lock.primero == NULL){
-
-            tabla_mutex[posicion_mutex].propietario = NULL;
-            tabla_mutex[posicion_mutex].num_bloqueos = 0;
-        }
-
-        /* Si hay alguien esperando, el mutex pasa al primero */
-        else{
-
-            /* Coge el primer proceso de la cola de espera */
-            p_proc_desbloqueado =
-                tabla_mutex[posicion_mutex].espera_lock.primero;
-
-            /* Lo elimina de la cola de espera del mutex */
-            eliminar_primero(&tabla_mutex[posicion_mutex].espera_lock);
-
-            /* El proceso despertado pasa a ser el nuevo propietario */
-            tabla_mutex[posicion_mutex].propietario = p_proc_desbloqueado;
-            tabla_mutex[posicion_mutex].num_bloqueos = 1;
-
-            /* El proceso deja de estar bloqueado */
-            p_proc_desbloqueado->estado = LISTO;
-
-            /* Se introduce en la lista de procesos listos */
-            insertar_ultimo(&lista_listos, p_proc_desbloqueado);
-        }
-    }
-
-    /* Cierra el descriptor del proceso */
-    p_proc_actual->descriptores[mutexid] = -1;
-
-    /* Hay una referencia menos al mutex */
-    tabla_mutex[posicion_mutex].num_abiertos--;
-
-    /*
-     * Si otros procesos todavia lo tienen abierto,
-     * el mutex sigue existiendo
-     */
-    if(tabla_mutex[posicion_mutex].num_abiertos > 0){
-
-        fijar_nivel_int(nivel_anterior);
-        return 0;
-    }
-
-    /*
-     * Nadie tiene ya abierto el mutex:
-     * se elimina de la tabla global
-     */
-    tabla_mutex[posicion_mutex].usado = MUTEX_NO_USADO;
-    tabla_mutex[posicion_mutex].nombre[0] = '\0';
-    tabla_mutex[posicion_mutex].tipo = NO_RECURSIVO;
-    tabla_mutex[posicion_mutex].num_abiertos = 0;
-    tabla_mutex[posicion_mutex].propietario = NULL;
-    tabla_mutex[posicion_mutex].num_bloqueos = 0;
-    tabla_mutex[posicion_mutex].espera_lock.primero = NULL;
-    tabla_mutex[posicion_mutex].espera_lock.ultimo = NULL;
-
-    /*
-     * Si hay un proceso esperando para crear un mutex,
-     * ahora hay un hueco y se puede despertar
-     */
-    if(lista_espera_crear_mutex.primero != NULL){
-
-        p_proc_creador = lista_espera_crear_mutex.primero;
-
-        /* Lo elimina de la lista de espera */
-        eliminar_primero(&lista_espera_crear_mutex);
-
-        /* Vuelve a estar listo */
-        p_proc_creador->estado = LISTO;
-
-        /* Se introduce en la lista de procesos listos */
-        insertar_ultimo(&lista_listos, p_proc_creador);
-    }
-
-    /* Fin de la zona critica */
-    fijar_nivel_int(nivel_anterior);
-
-    return 0;
+    /* Realiza el cierre del mutex */
+    return cerrar_mutex_descriptor(mutexid);
 }
 
 
