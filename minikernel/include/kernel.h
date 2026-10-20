@@ -46,6 +46,8 @@ typedef struct BCP_t {
 	void *info_mem;			/* descriptor del mapa de memoria */
 	unsigned int ticks_dormir;
     int descriptores[NUM_MUT_PROC]; /* Mutex que tiene abiertos este proceso */
+	/* Numero de ticks que le quedan al proceso de su rodaja */
+	int ticks_rodaja;
 } BCP;
 
 
@@ -86,6 +88,9 @@ lista_BCPs lista_espera_crear_mutex = {NULL, NULL};
  */
 
 BCP * p_proc_actual=NULL;
+
+/* Proceso que tiene pendiente ser expulsado por Round-Robin */
+BCP *p_proc_expulsar = NULL;
 
 /*
  * Variable global que representa la tabla de procesos

@@ -78,10 +78,10 @@ if (crear_proceso("simplon")<0)
 		printf("Error creando prueba_RR1\n");
 */
 
-/* SEGUNDA PRUEBA DE ROUND-ROBIN
+/* SEGUNDA PRUEBA DE ROUND-ROBIN*/
 	if (crear_proceso("prueba_RR2")<0)
 		printf("Error creando prueba_RR2\n");
-*/
+
 
 /* PRUEBA DEL TERMINAL
 	if (crear_proceso("prueba_term")<0)

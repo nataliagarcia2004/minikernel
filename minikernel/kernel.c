@@ -188,9 +188,18 @@ static void espera_int(){
  * Funci�n de planificacion que implementa un algoritmo FIFO.
  */
 static BCP * planificador(){
-	while (lista_listos.primero==NULL)
-		espera_int();		/* No hay nada que hacer */
-	return lista_listos.primero;
+	BCP *p_elegido;
+
+    while (lista_listos.primero == NULL)
+        espera_int();
+
+    /* Coge el primer proceso de la lista de listos */
+    p_elegido = lista_listos.primero;
+
+    /* Cada vez que recibe la CPU empieza con una rodaja completa */
+    p_elegido->ticks_rodaja = TICKS_POR_RODAJA;
+
+    return p_elegido;
 }
 
 static int cerrar_mutex_descriptor(unsigned int mutexid){
@@ -407,12 +416,60 @@ static void actualizar_dormidos(){
 }
 
 /*
+ * Actualiza la rodaja del proceso que esta ejecutando
+ */
+static void actualizar_rodaja(){
+
+    /*
+     * Si no hay procesos listos, el sistema esta esperando
+     * y no hay que gastar rodaja.
+     */
+    if(lista_listos.primero == NULL){
+        return;
+    }
+
+    /*
+     * Comprobamos que el proceso actual sea realmente
+     * el que esta ejecutando.
+     */
+    if(p_proc_actual != lista_listos.primero){
+        return;
+    }
+
+    /*
+     * Descuenta un tick de la rodaja.
+     */
+    if(p_proc_actual->ticks_rodaja > 0){
+
+        p_proc_actual->ticks_rodaja--;
+
+        /*
+         * Si la rodaja acaba de llegar a cero,
+         * recordamos que este proceso debe ser expulsado
+         * y activamos la interrupcion software.
+         */
+        if(p_proc_actual->ticks_rodaja == 0){
+
+            p_proc_expulsar = p_proc_actual;
+
+            activar_int_SW();
+        }
+    }
+}
+
+/*
  * Tratamiento de interrupciones de reloj
  */
 static void int_reloj(){
 
 	printk("-> TRATANDO INT. DE RELOJ\n");
-	actualizar_dormidos();
+
+    /* Actualiza los procesos dormidos */
+    actualizar_dormidos();
+
+    /* Descuenta la rodaja del proceso actual */
+    actualizar_rodaja();
+
     return;
 }
 
@@ -436,9 +493,88 @@ static void tratar_llamsis(){
  */
 static void int_sw(){
 
-	printk("-> TRATANDO INT. SW\n");
+    BCP *p_proc_anterior;
+    int nivel_anterior;
 
-	return;
+    printk("-> TRATANDO INT. SW\n");
+
+    /*
+     * Si no hay ninguna expulsion pendiente,
+     * no hay nada que hacer.
+     */
+    if(p_proc_expulsar == NULL){
+        return;
+    }
+
+    /*
+     * Comprueba que el proceso que esta ejecutando
+     * sea realmente el que habia agotado su rodaja.
+     *
+     * Si no es el mismo, significa que el proceso anterior
+     * se bloqueo o termino antes de tratar esta interrupcion.
+     */
+    if(p_proc_actual != p_proc_expulsar){
+
+        p_proc_expulsar = NULL;
+
+        return;
+    }
+
+    /*
+     * Si es el unico proceso listo, no tiene sentido
+     * realizar un cambio de contexto.
+     * Simplemente recibe una nueva rodaja.
+     */
+    if(lista_listos.primero == lista_listos.ultimo){
+
+        p_proc_actual->ticks_rodaja = TICKS_POR_RODAJA;
+
+        p_proc_expulsar = NULL;
+
+        return;
+    }
+
+    /*
+     * Guardamos el proceso que va a ser expulsado.
+     */
+    p_proc_anterior = p_proc_actual;
+
+    /*
+     * ZONA CRITICA:
+     * vamos a modificar la lista de procesos listos.
+     */
+    nivel_anterior = fijar_nivel_int(NIVEL_3);
+
+    /*
+     * El proceso actual sale del principio de la cola
+     * y pasa al final.
+     */
+    eliminar_primero(&lista_listos);
+    insertar_ultimo(&lista_listos, p_proc_anterior);
+
+    fijar_nivel_int(nivel_anterior);
+
+    /*
+     * Ya hemos tratado la expulsion pendiente.
+     */
+    p_proc_expulsar = NULL;
+
+    /*
+     * Selecciona el nuevo primer proceso.
+     * planificador() le dara una rodaja completa.
+     */
+    p_proc_actual = planificador();
+
+    printk("-> C.CONTEXTO POR ROUND-ROBIN: de %d a %d\n",
+            p_proc_anterior->id, p_proc_actual->id);
+
+    /*
+     * Cambia del proceso expulsado al nuevo proceso.
+     */
+    cambio_contexto(&(p_proc_anterior->contexto_regs),
+                    &(p_proc_actual->contexto_regs));
+
+    return;
 }
 
 /*
@@ -473,6 +609,8 @@ static int crear_tarea(char *prog){
 		p_proc->id=proc;
 		p_proc->estado=LISTO;
 		p_proc->ticks_dormir = 0;
+		/* Inicializa la rodaja de Round-Robin */
+		p_proc->ticks_rodaja = TICKS_POR_RODAJA;
 		/* Inicializa los descriptores de mutex del proceso */
 		for(i=0; i<NUM_MUT_PROC; i++){
 			p_proc->descriptores[i] = -1;
